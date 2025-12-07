@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Loading Website...</title>
+    <style>
+        body{background:#0f172a;color:white;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}
+        .loader{border:4px solid #f3f3f3;border-top:4px solid #3b82f6;border-radius:50%;width:40px;height:40px;animation:spin 1s linear infinite}
+        @keyframes spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}
+    </style>
+</head>
+<body>
+    <div style="text-align:center">
+        <div class="loader" style="margin:0 auto 20px"></div>
+        <h3>Memuat Website...</h3>
+    </div>
+
+    <script>
+        (function() {
+            // KONFIGURASI (Harus sama dengan index.html)
+            const REPO_NAME = '/hosting2'; // Ganti jika nama repo beda
+            const SB_URL = 'https://wmhhrcgvnfjsgeideyut.supabase.co';
+            const SB_BUCKET = 'hosting';
+
+            // Ambil Path URL (Misal: /hosting/c85.../os/)
+            let path = window.location.pathname;
+
+            // Bersihkan nama repo dari path
+            if (path.startsWith(REPO_NAME)) {
+                path = path.substring(REPO_NAME.length);
+            }
+            if (path.startsWith('/')) path = path.substring(1);
+            if (!path) return window.location.href = REPO_NAME + '/'; // Balik ke dashboard jika kosong
+
+            // Jika tidak ada ekstensi file, anggap index.html
+            if (path.endsWith('/')) path += 'index.html';
+            else if (!path.includes('.')) path += '/index.html';
+
+            // Ambil dari Supabase
+            const fullUrl = `${SB_URL}/storage/v1/object/public/${SB_BUCKET}/${path}`;
+            const baseUrl = fullUrl.substring(0, fullUrl.lastIndexOf('/') + 1);
+
+            fetch(fullUrl)
+                .then(r => {
+                    if (!r.ok) throw new Error("Halaman Tidak Ditemukan (404)");
+                    return r.text();
+                })
+                .then(html => {
+                    // Inject Base URL agar Gambar/CSS di ZIP terbaca
+                    let mod = html;
+                    const baseTag = `<base href="${baseUrl}">`;
+                    if (mod.includes('<head>')) mod = mod.replace('<head>', `<head>${baseTag}`);
+                    else if (mod.includes('<html>')) mod = mod.replace('<html>', `<html><head>${baseTag}</head>`);
+                    else mod = `<head>${baseTag}</head>` + mod;
+                    
+                    document.open(); document.write(mod); document.close();
+                })
+                .catch(e => {
+                    document.body.innerHTML = `<div style="text-align:center"><h2>404 Not Found</h2><p>${e.message}</p><a href="${REPO_NAME}/" style="color:#60a5fa">Kembali ke Dashboard</a></div>`;
+                });
+        })();
+    </script>
+</body>
+</html>
