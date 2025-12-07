@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MiniHost</title>
+    <!-- Library -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.3.4/vue.global.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        [v-cloak] { display: none !important; }
+        body { background-color: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', sans-serif; }
+        .loading-view { height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; background: #0f172a; color: white; }
+        textarea.code-editor { font-family: 'Courier New', monospace; white-space: pre; overflow-x: scroll; }
+        .fade-enter-active, .fade-leave-active { transition: opacity 0.3s; }
+        .fade-enter-from, .fade-leave-to { opacity: 0; }
+    </style>
+</head>
+<body>
+
+    <!-- 1. SYSTEM VIEWER (LINK BERSIH / REAL PATH) -->
+    <script>
+        (function() {
+            // KONFIGURASI
+            const REPO_NAME = '/hosting'; // Sesuaikan nama repo GitHub Anda (jika root domain, kosongkan jadi '')
+            const SB_URL = 'https://wmhhrcgvnfjsgeideyut.supabase.co';
+            const SB_BUCKET = 'hosting';
+
+            // Logika Deteksi URL
+            const currentPath = window.location.pathname; // Misal: /hosting/user_id/os/index.html
+            
+            // Cek apakah user sedang di Dashboard (Root) atau di Web Project (Subfolder)
+            // Logika: Jika path lebih panjang dari nama repo, berarti sedang buka project
+            let viewPath = null;
+            
+            if (currentPath !== REPO_NAME && currentPath !== REPO_NAME + '/' && currentPath !== '/') {
+                // Bersihkan nama repo dari path untuk dapat path Supabase
+                // Dari: /hosting/user_id/os/index.html -> Menjadi: user_id/os/index.html
+                let cleanPath = currentPath;
+                if(REPO_NAME && cleanPath.startsWith(REPO_NAME)) {
+                    cleanPath = cleanPath.substring(REPO_NAME.length);
+                }
+                if(cleanPath.startsWith('/')) cleanPath = cleanPath.substring(1);
+                
+                // Jika user lupa nulis index.html di ujung
+                if(cleanPath.endsWith('/')) cleanPath += 'index.html';
+                else if(!cleanPath.includes('.')) cleanPath += '/index.html';
+
+                viewPath = cleanPath;
+            }
+
+            // JIKA TERDETEKSI MEMBUKA PROJECT
+            if (viewPath) {
+                document.body.innerHTML = `
+                    <div class="loading-view">
+                        <i class="fa-solid fa-circle-notch fa-spin" style="font-size:3rem;margin-bottom:20px;color:#3b82f6;"></i>
+                        <h3>Memuat Website...</h3>
+                    </div>`;
+                
+                const fullFileUrl = `${SB_URL}/storage/v1/object/public/${SB_BUCKET}/${viewPath}`;
+                const baseUrl = fullFileUrl.substring(0, fullFileUrl.lastIndexOf('/') + 1);
+
+                fetch(fullFileUrl)
+                    .then(r => {
+                        if (!r.ok) throw new Error("Halaman tidak ditemukan (404)");
+                        return r.text();
+                    })
+                    .then(html => {
+                        // Inject Base URL untuk aset gambar/css
+                        let modHtml = html;
+                        const baseTag = `<base href="${baseUrl}">`;
+                        if (modHtml.includes('<head>')) modHtml = modHtml.replace('<head>', `<head>${baseTag}`);
+                        else if (modHtml.includes('<html>')) modHtml = modHtml.replace('<html>', `<html><head>${baseTag}</head>`);
+                        else modHtml = `<head>${baseTag}</head>` + modHtml;
+
+                        document.open(); document.write(modHtml); document.close();
+                    })
+                    .catch(err => {
+                        document.body.innerHTML = `
+                            <div style="text-align:center;padding:50px;color:#ef4444;font-family:sans-serif;background:#1e293b;height:100vh;">
+                                <h2 style="font-size:2rem;margin-bottom:10px;">404 Not Found</h2>
+                                <p style="color:#94a3b8;">${err.message}</p>
+                                <a href="${REPO_NAME}/" style="display:inline-block;margin-top:20px;color:#3b82f6;text-decoration:none;border:1px solid #3b82f6;padding:10px 20px;border-radius:5px;">Kembali ke Dashboard</a>
+                            </div>`;
+                    });
+                throw new Error("Viewer Mode - Stop Dashboard"); 
+            }
+        })();
+    </script>
+
+    <!-- 2. DASHBOARD APP (VUE JS) -->
+    <div id="app" v-cloak class="container mx-auto p-4 max-w-2xl pb-20">
+        <!-- HEADER -->
+        <div class="flex justify-between items-center mb-6 mt-4 border-b border-gray-700 pb-4">
+            <h1 class="text-2xl font-bold text-white flex items-center gap-2">
+                <i class="fa-solid fa-rocket text-blue-500"></i> MiniHost <span class="text-xs bg-gray-700 px-2 rounded">Clean URL</span>
+            </h1>
+            <button v-if="user" @click="logout" class="text-red-400 text-sm border border-red-900 bg-red-900/20 px-4 py-2 rounded hover:bg-red-900/40">Logout</button>
+        </div>
+
+        <!-- AUTH -->
+        <div v-if="!user" class="max-w-md mx-auto mt-10">
+            <div class="bg-gray-800 p-8 rounded-xl border border-gray-700 shadow-lg">
+                <h2 class="text-2xl font-bold mb-6 text-white text-center">{{ isLoginMode ? 'Login' : 'Daftar' }}</h2>
+                <form @submit.prevent="handleAuth" class="space-y-4">
+                    <input v-model="email" type="email" required placeholder="Email" class="w-full bg-gray-900 border border-gray-600 text-white p-3 rounded">
+                    <input v-model="password" type="password" required placeholder="Password" class="w-full bg-gray-900 border border-gray-600 text-white p-3 rounded">
+                    <button type="submit" :disabled="loading" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded">
+                        {{ loading ? 'Loading...' : (isLoginMode ? 'Masuk' : 'Daftar') }}
+                    </button>
+                </form>
+                <p class="text-center mt-4 text-gray-400 text-sm cursor-pointer" @click="isLoginMode = !isLoginMode">
+                    {{ isLoginMode ? 'Belum punya akun? Daftar' : 'Sudah punya akun? Login' }}
+                </p>
+                <p v-if="errorMsg" class="text-red-400 text-center mt-2">{{ errorMsg }}</p>
+            </div>
+        </div>
+
+        <!-- DASHBOARD -->
+        <div v-else>
+            <!-- UPLOAD -->
+            <div class="bg-gray-800 p-6 rounded-xl border border-gray-700 mb-8 shadow-xl">
+                <h3 class="font-bold text-lg mb-4 text-white">Deploy Website Baru</h3>
+                <div class="mb-5">
+                    <label class="text-xs text-gray-400 uppercase block mb-1">Nama Project</label>
+                    <input v-model="projectName" type="text" placeholder="web-keren" class="w-full bg-gray-900 border border-gray-600 text-white p-2 rounded" @input="sanitizeProjectName">
+                </div>
+                <div class="grid grid-cols-3 gap-1 mb-4 bg-gray-900 p-1 rounded-lg">
+                    <button @click="uploadType='zip'" :class="uploadType=='zip'?'bg-blue-600 text-white':'text-gray-400'" class="py-2 rounded text-sm">ZIP</button>
+                    <button @click="uploadType='single'" :class="uploadType=='single'?'bg-blue-600 text-white':'text-gray-400'" class="py-2 rounded text-sm">HTML</button>
+                    <button @click="uploadType='code'" :class="uploadType=='code'?'bg-blue-600 text-white':'text-gray-400'" class="py-2 rounded text-sm">Code</button>
+                </div>
+                <div v-if="uploadType === 'single' || uploadType === 'zip'" class="mb-4 border-2 border-dashed border-gray-600 p-6 text-center rounded cursor-pointer" @click="$refs.fileInput.click()">
+                    <p class="text-sm text-gray-300">Pilih File {{ uploadType.toUpperCase() }}</p>
+                    <input type="file" ref="fileInput" :accept="uploadType=='zip'?'.zip':'.html'" @change="handleFile" class="hidden">
+                    <p v-if="selectedFileName" class="text-blue-400 text-xs mt-2">{{ selectedFileName }}</p>
+                </div>
+                <div v-if="uploadType === 'code'" class="mb-4">
+                    <textarea v-model="rawHtmlCode" class="code-editor w-full h-40 bg-gray-900 border border-gray-600 text-green-400 p-3 rounded text-sm" placeholder="<html>...</html>"></textarea>
+                </div>
+                <button @click="deploy" :disabled="loading || !projectName" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded">
+                    {{ loading ? 'Sedang Deploy...' : 'DEPLOY' }}
+                </button>
+            </div>
+
+            <!-- LIST -->
+            <div>
+                <h3 class="font-bold text-gray-400 text-xs mb-3 uppercase">Project Aktif</h3>
+                <div v-for="dep in deployments" :key="dep.id" class="bg-gray-800 p-4 rounded-lg border border-gray-700 mb-3">
+                    <div class="flex justify-between items-start mb-3">
+                        <div>
+                            <h4 class="font-bold text-white text-lg">{{ dep.site_name }} <a :href="getViewerLink(dep.site_name)" target="_blank"><i class="fa-solid fa-external-link-alt text-xs text-gray-500"></i></a></h4>
+                            <p class="text-xs text-gray-500">{{ new Date(dep.created_at).toLocaleString() }}</p>
+                        </div>
+                        <div class="flex gap-1">
+                             <button @click="openDomainSettings(dep)" class="bg-gray-700 px-3 py-1.5 rounded text-xs text-white">Domain</button>
+                             <button @click="deleteSite(dep)" class="bg-red-900/40 border border-red-600 text-red-500 px-3 py-1.5 rounded text-xs"><i class="fa-solid fa-trash"></i></button>
+                        </div>
+                    </div>
+                    <!-- LINK BERSIH -->
+                    <div class="bg-black/30 p-2 rounded text-xs font-mono text-gray-400 flex justify-between items-center">
+                        <span class="truncate mr-2">{{ getViewerLink(dep.site_name) }}</span>
+                        <button @click="copyLink(getViewerLink(dep.site_name))" class="text-blue-400 hover:text-white"><i class="fa-regular fa-copy"></i></button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- MODAL WORKER -->
+        <transition name="fade">
+            <div v-if="showModal" class="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
+                <div class="bg-gray-800 rounded-xl max-w-2xl w-full border border-gray-600 shadow-2xl flex flex-col max-h-[90vh]">
+                    <div class="p-4 border-b border-gray-700 flex justify-between items-center bg-gray-900">
+                        <h3 class="text-white font-bold">Cloudflare Worker Code</h3>
+                        <button @click="showModal = false" class="text-gray-400"><i class="fa-solid fa-times"></i></button>
+                    </div>
+                    <div class="p-6 overflow-y-auto">
+                        <p class="text-xs text-gray-400 mb-2">Gunakan kode ini di Cloudflare Worker untuk Custom Domain:</p>
+                        <div class="relative">
+                            <textarea readonly class="w-full h-64 bg-black text-green-400 font-mono text-xs p-4 rounded border border-gray-700 outline-none resize-none">{{ generatedWorkerCode }}</textarea>
+                            <button @click="copyWorkerCode" class="absolute top-2 right-2 bg-blue-600 text-white text-xs px-2 py-1 rounded">Copy</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </transition>
+    </div>
+
+    <script>
+        const { createApp, ref, onMounted, computed } = Vue;
+        const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndtaGhyY2d2bmZqc2dlaWRleXV0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjUxMjgyOTEsImV4cCI6MjA4MDcwNDI5MX0.sCewtOfQWDNtWVjpn_aLxUcIWuaiwlSoeO07ORW5Znk';
+        const SB_URL_JS = 'https://wmhhrcgvnfjsgeideyut.supabase.co';
+        // GANTI INI DENGAN NAMA REPO GITHUB ANDA (misal '/hosting')
+        // Jika pakai custom domain di github (user.github.io), kosongkan jadi ''
+        const REPO_PATH = '/hosting'; 
+
+        createApp({
+            setup() {
+                const user = ref(null);
+                const email = ref(''); const password = ref('');
+                const isLoginMode = ref(true); const loading = ref(false);
+                const errorMsg = ref(''); const statusMsg = ref('');
+                const projectName = ref(''); const uploadType = ref('zip');
+                const rawHtmlCode = ref('<!DOCTYPE html>\n<html>\n<head>\n<title>Web Saya</title>\n</head>\n<body>\n<h1>Halo</h1>\n</body>\n</html>');
+                const fileInput = ref(null); const selectedFileName = ref('');
+                const deployments = ref([]); const showModal = ref(false);
+                const activeModalProject = ref(''); const activeOriginUrl = ref('');
+
+                let sbClient = null;
+                if(window.supabase) sbClient = window.supabase.createClient(SB_URL_JS, SUPABASE_KEY);
+
+                onMounted(async () => {
+                    if(!sbClient) return;
+                    const { data: { session } } = await sbClient.auth.getSession();
+                    if(session) { user.value = session.user; fetchDeployments(); }
+                    sbClient.auth.onAuthStateChange((_e, s) => { user.value = s?.user || null; if(user.value) fetchDeployments(); });
+                });
+
+                const handleAuth = async () => {
+                    loading.value = true; errorMsg.value = '';
+                    try {
+                        const { data, error } = isLoginMode.value 
+                            ? await sbClient.auth.signInWithPassword({ email: email.value, password: password.value })
+                            : await sbClient.auth.signUp({ email: email.value, password: password.value });
+                        if(error) throw error;
+                        if(!isLoginMode.value && data.session) user.value = data.session.user;
+                        else if(!isLoginMode.value) { isLoginMode.value=true; alert('Cek email!'); }
+                    } catch(e) { errorMsg.value = e.message; }
+                    finally { loading.value = false; }
+                };
+
+                const handleFile = (e) => { const f = e.target.files[0]; if(f) selectedFileName.value = f.name; };
+
+                const deploy = async () => {
+                    if(!projectName.value) return;
+                    loading.value = true;
+                    const userId = user.value.id;
+                    const basePath = `${userId}/${projectName.value}`;
+                    try {
+                        if(uploadType.value === 'code') {
+                            const blob = new Blob([rawHtmlCode.value], { type: 'text/html' });
+                            await uploadToSupabase(basePath, 'index.html', blob, 'text/html');
+                        } else {
+                            const file = fileInput.value.files[0];
+                            if(!file) throw new Error("Pilih file");
+                            
+                            if(uploadType.value === 'single') {
+                                await uploadToSupabase(basePath, 'index.html', file, 'text/html');
+                            } else {
+                                const zip = new JSZip();
+                                const contents = await zip.loadAsync(file);
+                                for(const f of Object.keys(contents.files)) {
+                                    if(!contents.files[f].dir) {
+                                        const blob = await contents.files[f].async('blob');
+                                        let type = f.endsWith('.html') ? 'text/html' : f.endsWith('.css')?'text/css':f.endsWith('.js')?'application/javascript':'auto';
+                                        await uploadToSupabase(basePath, f, blob, type);
+                                    }
+                                }
+                            }
+                        }
+                        await sbClient.from('deployments').upsert({
+                            user_id: userId, site_name: projectName.value, 
+                            public_url: `${basePath}/index.html` 
+                        }, { onConflict: 'site_name, user_id' });
+                        alert('Berhasil!'); fetchDeployments(); projectName.value=''; selectedFileName.value='';
+                    } catch(e) { alert(e.message); } finally { loading.value = false; }
+                };
+
+                const uploadToSupabase = async (path, name, body, type) => {
+                    await sbClient.storage.from('hosting').upload(`${path}/${name}`, body, { upsert: true, contentType: type });
+                };
+
+                const fetchDeployments = async () => {
+                    const { data } = await sbClient.from('deployments').select('*').eq('user_id', user.value.id).order('created_at', {ascending:false});
+                    deployments.value = data || [];
+                };
+
+                const deleteSite = async (dep) => {
+                    if(!confirm('Hapus?')) return;
+                    const folder = `${user.value.id}/${dep.site_name}`;
+                    const { data: list } = await sbClient.storage.from('hosting').list(folder);
+                    if(list?.length) await sbClient.storage.from('hosting').remove(list.map(x=>`${folder}/${x.name}`));
+                    await sbClient.from('deployments').delete().eq('id', dep.id);
+                    fetchDeployments();
+                };
+
+                // --- GENERATOR LINK BERSIH (CLEAN URL) ---
+                const getViewerLink = (name) => {
+                    const origin = window.location.origin; // https://las...github.io
+                    // Hasil: https://las...github.io/hosting/USER_ID/PROJECT_NAME/
+                    return `${origin}${REPO_PATH}/${user.value.id}/${name}/`;
+                };
+
+                const copyLink = (t) => { navigator.clipboard.writeText(t); alert('Disalin!'); };
+
+                // WORKER
+                const openDomainSettings = (dep) => {
+                    activeModalProject.value = dep.site_name;
+                    activeOriginUrl.value = `${SB_URL_JS}/storage/v1/object/public/hosting/${user.value.id}/${dep.site_name}/`;
+                    showModal.value = true;
+                };
+
+                const generatedWorkerCode = computed(() => {
+                    return `export default { async fetch(request) { const url = new URL(request.url); const origin = "${activeOriginUrl.value}"; let path = url.pathname; if(path==='/'||path==='') path='index.html'; else if(path.endsWith('/')) path+='index.html'; if(path.startsWith('/')) path=path.substring(1); const target=origin+path+url.search; const cache=caches.default; let response=await cache.match(target); if(!response){ let f=await fetch(target,{headers:{"User-Agent":"MiniHost"}}); if(f.status===404&&!path.includes('.')) f=await fetch(origin+'index.html'); response=new Response(f.body,f); response.headers.set("Access-Control-Allow-Origin","*"); response.headers.set("Cache-Control","public, max-age=3600"); if(f.status===200) try{cache.put(target,response.clone())}catch(e){} } return response; } }`;
+                });
+                const copyWorkerCode = () => { navigator.clipboard.writeText(generatedWorkerCode.value); alert('Disalin!'); };
+
+                return {
+                    user, email, password, isLoginMode, handleAuth, loading, errorMsg, projectName, uploadType, rawHtmlCode, fileInput, selectedFileName, handleFile, deploy, deployments, getViewerLink, copyLink, deleteSite, sanitizeProjectName: ()=>projectName.value=projectName.value.replace(/[^a-z0-9-]/g,'').toLowerCase(), showModal, activeModalProject, openDomainSettings, generatedWorkerCode, copyWorkerCode, logout: ()=>sbClient.auth.signOut()
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
